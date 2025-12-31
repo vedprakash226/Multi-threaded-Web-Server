@@ -1,3 +1,5 @@
+// used the proxy_parse library 
+
 #include "proxy_parse.h"
 #include<bits/stdc++.h>
 #include <sys/types.h>
@@ -102,6 +104,11 @@ void remove_cacheElement(){
     cacheElement* lru = tail;
     removeNode(lru);
     cacheMap.erase(lru->url);
+
+    if(tail==lru){
+        tail = lru->prev;
+    }
+    if(head==nullptr) tail = nullptr;
 
     cacheSize-= (lru->length + sizeof(cacheElement)+ lru->url.size());
     delete lru;
@@ -230,10 +237,11 @@ int connectRemoteServer(char* hostAddress, size_t port_num){
 // client handler
 int handleRequest(int clientSocketID, ParsedRequest* request, std::string &tempReq){
     std::vector<char> buffer(MAX_BYTES, '\0');
-    strcpy(buffer.data(), "GET");
+    strcpy(buffer.data(), "GET ");
     strcat(buffer.data(), request->path);
     strcat(buffer.data(), " ");
     strcat(buffer.data(), request->version);
+    strcat(buffer.data(), "\r\n");
 
     size_t bufferLength = strlen(buffer.data());
 
@@ -323,7 +331,7 @@ void* threadFunc(void* newSocket){
     }
 
     //make a copy of the buffer to find it in cache
-    std::string tempReq(buffer.data(), strlen(buffer.data()));
+    std::string tempReq(buffer.data(), bytesReceived);
 
     cacheElement* temp = find(tempReq);      //lookup in the cache if it exits
     if(temp!=nullptr){
@@ -339,7 +347,7 @@ void* threadFunc(void* newSocket){
             for(int i{0}; i<MAX_BYTES and pos<dataSize; i++){
                 response[i] = temp->data[pos++];
             }
-            send(socketID, response, std::strlen(response), 0);
+            send(socketID, response, MAX_BYTES, 0);
         }
 
     }

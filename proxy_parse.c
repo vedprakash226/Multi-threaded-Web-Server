@@ -435,36 +435,50 @@ ParsedRequest_parse(struct ParsedRequest * parse, const char *buf,
      }
 
 
-     parse->protocol = strtok_r(full_addr, "://", &saveptr);
-     if (parse->protocol == NULL) {
-	  debug( "invalid request line, missing host\n");
-	  free(tmp_buf);
-	  free(parse->buf);
-	  parse->buf = NULL;
-	  return -1;
-     }
-     
-     const char *rem = full_addr + strlen(parse->protocol) + strlen("://");
-     size_t abs_uri_len = strlen(rem);
+     if (strstr(full_addr, "://") != NULL) {
+         parse->protocol = strtok_r(full_addr, "://", &saveptr);
+         if (parse->protocol == NULL) {
+              debug( "invalid request line, missing host\n");
+              free(tmp_buf);
+              free(parse->buf);
+              parse->buf = NULL;
+              return -1;
+         }
 
-     parse->host = strtok_r(NULL, "/", &saveptr);
-     if (parse->host == NULL) {
-	  debug( "invalid request line, missing host\n");
-	  free(tmp_buf);
-	  free(parse->buf);
-	  parse->buf = NULL;
-	  return -1;
-     }
-     
-     if (strlen(parse->host) == abs_uri_len) {
-	  debug("invalid request line, missing absolute path\n");
-	  free(tmp_buf);
-	  free(parse->buf);
-	  parse->buf = NULL;
-	  return -1;
-     }
+         const char *rem = full_addr + strlen(parse->protocol) + strlen("://");
+         size_t abs_uri_len = strlen(rem);
 
-     parse->path = strtok_r(NULL, " ", &saveptr);
+         parse->host = strtok_r(NULL, "/", &saveptr);
+         if (parse->host == NULL) {
+              debug( "invalid request line, missing host\n");
+              free(tmp_buf);
+              free(parse->buf);
+              parse->buf = NULL;
+              return -1;
+         }
+         
+         if (strlen(parse->host) == abs_uri_len) {
+              debug("invalid request line, missing absolute path\n");
+              free(tmp_buf);
+              free(parse->buf);
+              parse->buf = NULL;
+              return -1;
+         }
+
+         parse->path = strtok_r(NULL, " ", &saveptr);
+     } else {
+         parse->protocol = (char*)"http";
+         parse->host = full_addr;
+         if (parse->host[0] == '/') parse->host++;
+         
+         char* slash = strchr(parse->host, '/');
+         if (slash != NULL) {
+             *slash = '\0';
+             parse->path = slash + 1;
+         } else {
+             parse->path = NULL;
+         }
+     }
      if (parse->path == NULL) {          // replace empty abs_path with "/"
 	  int rlen = strlen(root_abs_path);
 	  parse->path = (char *)malloc(rlen + 1);
