@@ -16,55 +16,21 @@
 
 #define MAX_BYTES 4096    //max allowed size of request/response
 #define MAX_CLIENTS 400     //max number of client requests served at a time
-#define MAX_SIZE 200*(1<<20)     //size of the cache
-#define MAX_ELEMENT_SIZE 10*(1<<20)     //max size of an element in cache
+#define MAX_SIZE 10*(1<<20)     //size of the cache
+#define MAX_ELEMENT_SIZE 1*(1<<20)     //max size of an element in cache
 
 struct cacheElement{
-    char* data;
     int length;
-    char* url;
     time_t timestamp_cache;
+    std::string url;
+    std::vector<char> data;
     cacheElement* next;
+    cacheElement* prev; 
+
+    cacheElement(): next(nullptr), prev(nullptr){}
 };
 
-// LRU cache functions
-cacheElement* find(char* url){
-    cacheElement* temp = nullptr;
-    pthread_mutex_lock(&lock);  //locking the shared resource
-    std::cout<<"Locked the cache for lookup"<<std::endl;
-
-    if(head!=nullptr){
-        cacheElement* temp = head;
-        while(temp!=nullptr){
-            if(!strcmp(temp->url, url)){
-                std::cout<<"Cache hit for URL: "<<std::endl;
-                
-                temp->timestamp_cache = time(nullptr);   //update the timestamp as latest
-                break;
-            }
-            temp = temp->next;
-        }
-    }else{
-        std::cout<<"Cache miss for URL"<<std::endl;
-    }
-
-    pthread_mutex_unlock(&lock);    //unlocking the shared resource
-    std::cout<<"Unlocked the cache after lookup"<<std::endl;
-    return temp;
-}
-
-// function to add element to cache
-int add_cacheElement(char* url, char* data, int length){
-    //aquire the lock
-    pthread_mutex_lock(&lock);
-    std::cout<<"Locked the cache for addition"<<std::endl;
-
-    
-}
-
-void remove_cacheElement();
-
-
+std::unordered_map<std::string, cacheElement*> cacheMap;  //hash map for quick lookup
 
 int portNumber;          
 int proxyServerSocketID;
@@ -74,8 +40,108 @@ pthread_mutex_t lock;   // mutex lock to avoid race condition on cache storage s
 sem_t semaphore;   // semaphore to limit number of clients
 
 // LRU cache variables head
-cacheElement* head;
+cacheElement* head;     //most recently used element
+cacheElement* tail;     //least recently used element
 int cacheSize;
+
+//helper functions
+void removeNode(cacheElement* node){
+    if(node==nullptr) return;
+
+    if(node==head) head = head->next;
+    if(node==tail) tail=tail->prev;
+    if(node->prev) node->prev->next = node->next;
+    if(node->next) node->next->prev = node->prev;
+
+    node->next = nullptr;
+    node->prev = nullptr;
+
+    return;
+}
+
+void addToFront(cacheElement* node){
+    if(node==nullptr or node==head) return;
+
+    node->next = head;
+    node->prev = nullptr;
+
+    if(head) head->prev = node;
+    head = node;
+    if(tail == nullptr) tail = head;
+
+    return;
+}
+
+
+// LRU cache functions
+cacheElement* find(std::string &url){
+    pthread_mutex_lock(&lock);  //locking the shared resource
+    std::cout<<"Locked the cache for lookup"<<std::endl;
+
+    auto it = cacheMap.find(url);
+    if(it==cacheMap.end()){
+        pthread_mutex_unlock(&lock);    //unlocking the shared resource
+        return nullptr;   //not found in cache
+    }
+
+    cacheElement* node = it->second;
+    removeNode(node);
+    addToFront(node);
+
+    node->timestamp_cache = time(nullptr);
+
+    pthread_mutex_unlock(&lock);    //unlocking the shared resource
+    std::cout<<"Unlocked the cache after lookup"<<std::endl;
+    return node;
+}
+
+// remove least recently used element from cache
+void remove_cacheElement(){
+    if(tail==nullptr) return;
+
+    cacheElement* lru = tail;
+    removeNode(lru);
+    cacheMap.erase(lru->url);
+
+    cacheSize-= (lru->length + sizeof(cacheElement)+ lru->url.size());
+    delete lru;
+}
+
+// function to add element to cache
+int add_cacheElement(std::vector<char> &data, std::string& url){
+    //aquire the lock
+    pthread_mutex_lock(&lock);
+    std::cout<<"Locked the cache for addition"<<std::endl;
+
+    //find the size of the new element
+    int sizeNewElement = data.size() + sizeof(cacheElement) + url.size();
+
+    if(sizeNewElement>MAX_ELEMENT_SIZE){
+        pthread_mutex_unlock(&lock);
+        std::cerr<<"Element size exceeds maximum allowed size. Not caching this element."<<std::endl;
+        return 0;
+    }
+
+    //check if max cahe size exceeded
+    while(cacheSize + sizeNewElement > MAX_SIZE){
+        remove_cacheElement();
+    }
+
+    //create new cache element
+    cacheElement* newElement = new cacheElement;
+    newElement->length = data.size();
+    newElement->timestamp_cache = time(nullptr);
+    newElement->data = data;
+    newElement->url = url;
+    addToFront(newElement);
+    cacheMap[url] = newElement;
+
+    cacheSize+=sizeNewElement;
+
+    //release the lock
+    pthread_mutex_unlock(&lock);
+    return 1;
+}
 
 // check if the HTTP version is supported
 int checkHTTPversion(char *msg){
@@ -220,10 +286,7 @@ int handleRequest(int clientSocketID, ParsedRequest* request, std::string &tempR
         bytesSent= recv(remoteSocketID, buffer.data(), MAX_BYTES-1, 0);
     }
 
-    //null termainate tempResponse
-    tempResponse.push_back('\0');
-
-    add_cacheElement(tempResponse.data(), tempReq.data(), strlen(tempReq.data()));
+    add_cacheElement(tempResponse, tempReq);
     close(remoteSocketID);
     return 0;
 }
@@ -262,9 +325,12 @@ void* threadFunc(void* newSocket){
     //make a copy of the buffer to find it in cache
     std::string tempReq(buffer.data(), strlen(buffer.data()));
 
-    cacheElement* temp = find(tempReq.data());      //lookup in the cache if it exits
+    cacheElement* temp = find(tempReq);      //lookup in the cache if it exits
     if(temp!=nullptr){
-        int dataSize = temp->length/sizeof(char);
+        // found the data in the cache
+        std::cout<<"Data found in cache. Served from cache."<<std::endl;
+
+        int dataSize = temp->length;
         int pos = 0;
         char response[MAX_BYTES];
 
@@ -276,8 +342,6 @@ void* threadFunc(void* newSocket){
             send(socketID, response, std::strlen(response), 0);
         }
 
-        // found the data in the cache
-        std::cout<<"Data found in cache. Served from cache."<<std::endl;
     }
     else if(bytesReceived>0){
         //data not found in cache
@@ -338,6 +402,11 @@ int main(int argc, char* argv[]){
 
     //initialization of semaphore
     sem_init(&semaphore, 0, MAX_CLIENTS);
+
+    //initialize cache size
+    cacheSize = 0;
+    head = nullptr;
+    tail = nullptr;
 
     //initialization of mutex lock
     pthread_mutex_init(&lock, nullptr);
