@@ -1,5 +1,3 @@
-// used the proxy_parse library 
-
 #include "proxy_parse.h"
 #include<bits/stdc++.h>
 #include <sys/types.h>
@@ -83,9 +81,11 @@ cacheElement* find(std::string &url){
     auto it = cacheMap.find(url);
     if(it==cacheMap.end()){
         pthread_mutex_unlock(&lock);    //unlocking the shared resource
+        std::cout<<"Not found in cache."<<std::endl;
         return nullptr;   //not found in cache
     }
 
+    
     cacheElement* node = it->second;
     removeNode(node);
     addToFront(node);
@@ -238,33 +238,31 @@ int connectRemoteServer(char* hostAddress, size_t port_num){
 int handleRequest(int clientSocketID, ParsedRequest* request, std::string &tempReq){
     std::vector<char> buffer(MAX_BYTES, '\0');
     strcpy(buffer.data(), "GET ");
-    strcat(buffer.data(), request->path);
+    strcat(buffer.data(), request->path.c_str());
     strcat(buffer.data(), " ");
-    strcat(buffer.data(), request->version);
+    strcat(buffer.data(), request->version.c_str());
     strcat(buffer.data(), "\r\n");
 
     size_t bufferLength = strlen(buffer.data());
 
-    if(ParsedHeader_set(request, "Connection", "close")<0){
-        std::cerr<<"Failed to set Connection header"<<std::endl;
+    request->setHeader("Connection", "close");
+
+    if(request->port.empty()){
+        request->setHeader("Host", request->host);
+    } else {
+        request->setHeader("Host", request->host + ":" + request->port);
     }
 
-    if(ParsedHeader_get(request, "Host")==nullptr){
-        if(ParsedHeader_set(request, "Host", request->host)<0){
-            std::cerr<<"Failed to set Host header"<<std::endl;
-        }
-    }
-
-    if(ParsedRequest_unparse_headers(request, buffer.data()+bufferLength, (size_t)(MAX_BYTES-bufferLength))<0){
+    if(request->unparse_headers(buffer.data()+bufferLength, (size_t)(MAX_BYTES-bufferLength))<0){
         std::cerr<<"Failed to unparse headers"<<std::endl;
     }
 
     size_t serverPort = 80;
-    if(request->port){
-        serverPort = atoi(request->port);
+    if(!request->port.empty()){
+        serverPort = stoi(request->port);
     }
 
-    int remoteSocketID = connectRemoteServer(request->host, serverPort);
+    int remoteSocketID = connectRemoteServer((char*)request->host.c_str(), serverPort);
     if(remoteSocketID<0) return -1;
 
     int bytesSent = send(remoteSocketID, buffer.data(), strlen(buffer.data()), 0);
@@ -354,15 +352,15 @@ void* threadFunc(void* newSocket){
     else if(bytesReceived>0){
         //data not found in cache
         //parse the reques
-        ParsedRequest *request = ParsedRequest_create();
+        ParsedRequest *request = new ParsedRequest();
 
-        if(ParsedRequest_parse(request, buffer.data(), dataLength)<0){
+        if(request->parse(buffer.data(), dataLength)<0){
             std::cerr<<"Request parsing failed"<<std::endl;
         }else{
             std::fill(buffer.begin(), buffer.end(), '\0');
 
-            if(!strcmp(request->method, "GET")){
-                if(request->host and request->path and checkHTTPversion(request->version)==1){
+            if(request->method == "GET"){
+                if(!request->host.empty() and !request->path.empty() and checkHTTPversion((char*)request->version.c_str())==1){
                     bytesReceived = handleRequest(socketID, request, tempReq);
 
                     // if no response from the server
@@ -377,7 +375,7 @@ void* threadFunc(void* newSocket){
             }
         }
         
-        ParsedRequest_destroy(request);
+        delete request;
     }
     else if(bytesReceived==0){
         std::cerr<<"Client disconnected unexpectedly."<<std::endl;
